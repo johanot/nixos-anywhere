@@ -364,6 +364,10 @@ if [[ ${is_os-n} != "Linux" ]]; then
   abort "This script requires Linux as the operating system, but got $is_os"
 fi
 
+# Hetzner: Short-curcuit the kexec process here and just use the rescue system
+# TODO: Parameterize this for the script
+is_installer=y
+
 if [[ ${is_kexec-n} == "n" ]] && [[ ${is_installer-n} == "n" ]]; then
   if [[ ${is_container-none} != "none" ]]; then
     echo "WARNING: This script does not support running from a '${is_container}' container. kexec will likely not work" >&2
@@ -423,6 +427,37 @@ SSH
   # waiting for machine to become available again
   until ssh_ -o ConnectTimeout=10 -- exit 0; do sleep 5; done
 fi
+
+# Install Nix
+ssh_ sh <<SSH
+if ! which nix > /dev/null; then
+  curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install --no-confirm
+fi
+SSH
+
+# Install NixOS install tools
+ssh_ sh <<SSH
+if ! which nixos-install > /dev/null; then
+  nix-env -f '<nixpkgs>' -iA nixos-install-tools
+fi
+SSH
+
+# Install ZFS and unlink Hetzner rescue system symlinks
+ssh_ bash <<SSH
+if ! stat /usr/bin/zpool > /dev/null; then
+  echo "deb http://deb.debian.org/debian bookworm-backports main contrib" >/etc/apt/sources.list.d/bookworm-backports.list
+  echo "deb-src http://deb.debian.org/debian bookworm-backports main contrib" >>/etc/apt/sources.list.d/bookworm-backports.list
+  echo "Package: src:zfs-linux" >/etc/apt/preferences.d/90_zfs
+  echo "Pin: release n=bookworm-backports" >>/etc/apt/preferences.d/90_zfs
+  echo "Pin-Priority: 990" >>/etc/apt/preferences.d/90_zfs
+  apt update
+  DEBIAN_FRONTEND=noninteractive apt install -y dpkg-dev linux-headers-generic linux-image-generic
+  DEBIAN_FRONTEND=noninteractive apt install -y zfs-dkms zfsutils-linux
+fi
+for LL in \$(find /usr/local/sbin/ -type l); do
+  unlink "\$LL"
+done
+SSH
 
 # Installation will fail if non-root user is used for installer.
 # Switch to root user by copying authorized_keys.
